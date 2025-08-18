@@ -1,4 +1,4 @@
 git pull
 uv sync
-source .venv/Scripts/activate
-pm2 start python web.py
+source .venv/bin/activate
+python3 web.py

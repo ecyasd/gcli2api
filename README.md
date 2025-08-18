@@ -4,6 +4,45 @@
 
 专业解决方案，旨在解决 Gemini API 服务中频繁的 API 密钥中断和质量下降问题。
 
+---
+
+## ⚠️ 重要使用限制声明
+
+**严格禁止商业用途**
+
+本项目仅供个人学习、研究和非商业用途使用。严格禁止以下用途：
+
+### 完全禁止的用途：
+- ❌ **任何形式的商业用途**，包括但不限于：
+  - 商业产品开发或集成
+  - 商业服务提供
+  - 收费项目或付费服务
+  - 企业内部商业运营
+  - 商业咨询服务
+- ❌ **盈利性质的活动**，包括但不限于：
+  - 直接或间接收费
+  - 广告盈利
+  - 数据销售或变现
+  - 订阅服务
+  - 代理服务收费
+- ❌ **生产环境部署**用于服务外部用户
+- ❌ **重新包装或二次分发**作为商业产品
+- ❌ **规模化部署**用于大量用户服务
+- ❌ **API 转售**或代理服务
+
+### 允许的用途：
+- ✅ 个人学习和研究
+- ✅ 教育用途（非营利性）
+- ✅ 开源项目贡献
+- ✅ 技术测试和实验
+
+### 法律责任声明：
+- 违反商业使用限制的用户将承担全部法律责任
+- 项目作者不承担任何因商业使用导致的法律后果
+- 用户使用本项目即表示同意遵守上述限制条款
+
+---
+
 ## 核心功能
 
 **OpenAI 兼容性**
@@ -33,19 +72,21 @@
 
 *注：所有模型均支持伪流式变体*
 
+---
+
 ## 安装指南
 
 ### Termux 环境
 
 **初始安装**
 ```bash
-curl -o install-termux.sh "https://raw.githubusercontent.com/su-kaka/gcli2api/refs/heads/master/install-termux.sh" && chmod +x install-termux.sh && ./install-termux.sh
+curl -o termux-install.sh "https://raw.githubusercontent.com/su-kaka/gcli2api/refs/heads/master/termux-install.sh" && chmod +x termux-install.sh && ./termux-install.sh
 ```
 
 **重启服务**
 ```bash
 cd gcli2api
-bash start.sh
+bash termux-start.sh
 ```
 
 ### Windows 环境
@@ -58,6 +99,63 @@ iex (iwr "https://raw.githubusercontent.com/su-kaka/gcli2api/refs/heads/master/i
 **重启服务**
 双击执行 `start.bat`
 
+### Linux 环境
+
+**初始安装**
+```bash
+curl -o install.sh "https://raw.githubusercontent.com/su-kaka/gcli2api/refs/heads/master/install.sh" && chmod +x install.sh && ./install.sh
+```
+
+**重启服务**
+```bash
+cd gcli2api
+bash start.sh
+```
+
+### Docker 环境
+
+**Docker 运行命令**
+```bash
+docker run -d --name gcli2api --network host -e PASSWORD=pwd -v $(pwd)/data/creds:/app/geminicli/creds ghcr.io/cetaceang/gcli2api:latest
+```
+
+**Docker Compose 运行命令**
+1. 将以下内容保存为 `docker-compose.yml` 文件：
+    ```yaml
+    version: '3.8'
+
+    services:
+      gcli2api:
+        image: ghcr.io/cetaceang/gcli2api:latest
+        container_name: gcli2api
+        restart: unless-stopped
+        network_mode: host
+        environment:
+          - PASSWORD=pwd
+        volumes:
+          - ./data/creds:/app/geminicli/creds
+        healthcheck:
+          test: ["CMD-SHELL", "python -c \"import sys, urllib.request, os; req = urllib.request.Request('http://localhost:7861/v1/models', headers={'Authorization': 'Bearer ' + os.environ.get('PASSWORD', 'pwd')}); sys.exit(0 if urllib.request.urlopen(req, timeout=5).getcode() == 200 else 1)\""]
+          interval: 30s
+          timeout: 10s
+          retries: 3
+          start_period: 40s
+    ```
+2. 启动服务：
+    ```bash
+    docker-compose up -d
+    ```
+
+---
+
+## ⚠️ 注意事项
+
+- 当前 OAuth 验证流程**仅支持本地主机（localhost）访问**，即须通过 `http://127.0.0.1:7861/auth` 完成认证。
+- **如需在云服务器或其他远程环境部署，请先在本地运行服务并完成 OAuth 验证，获得生成的 json 凭证文件（位于 `./geminicli/creds` 目录）后，再在auth面板将该文件上传即可。**
+- **请严格遵守使用限制，仅用于个人学习和非商业用途**
+
+---
+
 ## 配置说明
 
 1. 访问 `http://127.0.0.1:7861/auth`
@@ -65,6 +163,8 @@ iex (iwr "https://raw.githubusercontent.com/su-kaka/gcli2api/refs/heads/master/i
 3. 配置 OpenAI 兼容客户端：
    - **端点地址**：`http://127.0.0.1:7861/v1`
    - **API 密钥**：`pwd`（默认值）
+
+---
 
 ## 故障排除
 
@@ -76,3 +176,14 @@ npx https://github.com/google-gemini/gemini-cli
 2. 按回车确认
 3. 完成浏览器中的 Google 账户认证
 4. 系统将自动完成授权
+
+---
+
+## 许可证与免责声明
+
+本项目仅供学习和研究用途。使用本项目表示您同意：
+- 不将本项目用于任何商业用途
+- 承担使用本项目的所有风险和责任
+- 遵守相关的服务条款和法律法规
+
+项目作者对因使用本项目而产生的任何直接或间接损失不承担责任。
