@@ -4,7 +4,6 @@ OAuth Web 服务器 - 独立的OAuth认证服务
 提供简化的OAuth认证界面，只包含验证功能，不包含上传和管理功能
 """
 
-import os
 import sys
 from log import log
 import asyncio
@@ -16,16 +15,13 @@ from pydantic import BaseModel
 
 # 导入本地模块
 try:
-    from geminicli.auth_api import (
+    from src.auth_api import (
         create_auth_url, 
         verify_password, 
         generate_auth_token, 
         verify_auth_token,
         asyncio_complete_auth_flow,
-        start_oauth_server,
-        stop_oauth_server,
-        CALLBACK_URL,
-        CALLBACK_PORT,
+        CALLBACK_HOST,
     )
 except ImportError as e:
     log.error(f"导入模块失败: {e}")
@@ -35,7 +31,6 @@ except ImportError as e:
 app = FastAPI(
     title="Google OAuth 认证服务",
     description="独立的OAuth认证服务，用于获取Google Cloud认证文件",
-    version="1.0.0"
 )
 
 # HTTP Bearer认证
@@ -63,7 +58,7 @@ async def serve_oauth_page():
     """提供OAuth认证页面"""
     try:
         # 读取HTML文件
-        html_file_path = "./geminicli/oauth_web.html"
+        html_file_path = "./front/multi_user_auth_web.html"
         
         with open(html_file_path, "r", encoding="utf-8") as f:
             html_content = f.read()
@@ -105,13 +100,23 @@ async def start_auth(request: AuthStartRequest, token: str = Depends(verify_toke
         result = create_auth_url(project_id, user_session)
         
         if result['success']:
-            return JSONResponse(content={
+            # 构建动态回调URL
+            callback_port = result.get('callback_port')
+            callback_url = f"http://{CALLBACK_HOST}:{callback_port}" if callback_port else None
+            
+            response_data = {
                 "auth_url": result['auth_url'],
                 "state": result['state'],
-                "callback_url": CALLBACK_URL,
                 "auto_project_detection": result.get('auto_project_detection', False),
                 "detected_project_id": result.get('detected_project_id')
-            })
+            }
+            
+            # 如果有回调端口信息，添加到响应中
+            if callback_port:
+                response_data["callback_port"] = callback_port
+                response_data["callback_url"] = callback_url
+            
+            return JSONResponse(content=response_data)
         else:
             raise HTTPException(status_code=500, detail=result['error'])
             
@@ -175,89 +180,41 @@ async def auth_callback(request: AuthCallbackRequest, token: str = Depends(verif
 async def lifespan(app: FastAPI):
     log.info("OAuth认证服务启动中...")
 
-    # 启动OAuth回调服务器
-    if start_oauth_server():
-        log.info(f"OAuth回调服务器已启动: {CALLBACK_URL}")
-    else:
-        log.warning(f"OAuth回调服务器启动失败，端口 {CALLBACK_PORT} 可能被占用")
+    # OAuth回调服务器现在动态按需启动，每个认证流程使用独立端口
+    log.info("OAuth回调服务器将为每个认证流程动态分配端口")
 
-    # 检查环境变量配置
-    password = os.getenv('PASSWORD')
-    if not password:
-        log.warning("未设置PASSWORD环境变量，将使用默认密码 'pwd'")
-        log.warning("建议设置环境变量: export PASSWORD=your_password")
+    # 从配置获取密码和端口
+    from config import get_panel_password, get_server_port
+    password = get_panel_password()
+    port = get_server_port()
 
-    # 显示配置信息
-    log.info(f"OAuth回调地址: {CALLBACK_URL}")
     log.info("Web服务已由 ASGI 服务器启动")
-
-    # 获取端口配置
-    port = int(os.getenv("PORT", "7861"))
     
     print("\n" + "="*60)
     print("🚀 Google OAuth 认证服务已启动")
     print("="*60)
     print(f"📱 Web界面: http://localhost:{port}")
-    print(f"🔗 OAuth回调: {CALLBACK_URL}")
     print(f"🔐 默认密码: {'已设置' if password else 'pwd (请设置PASSWORD环境变量)'}")
+    print(f"🔄 多用户并发: 支持多用户同时认证（动态端口分配）")
     print("="*60 + "\n")
 
     try:
         yield
     finally:
         log.info("OAuth认证服务关闭中...")
-        stop_oauth_server()
+        # 新架构下，OAuth服务器由认证流程自动管理，无需手动清理
         log.info("OAuth认证服务已关闭")
 
 # 注册 lifespan 处理器
 app.router.lifespan_context = lifespan
 
-def get_available_port(start_port: int = 8000) -> int:
-    """获取可用端口"""
-    import socket
-    
-    for port in range(start_port, start_port + 100):
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.bind(('localhost', port))
-                return port
-        except OSError:
-            continue
-    
-    return start_port  # 如果都被占用，返回起始端口
-
-
-def main():
-    """主函数"""
-    print("启动 Google OAuth 认证服务...")
-    
-    # 解析命令行参数
-    import argparse
-    parser = argparse.ArgumentParser(description='Google OAuth 认证服务')
-    parser.add_argument('--host', default='localhost', help='服务器主机地址')
-    parser.add_argument('--port', type=int, default=8000, help='服务器端口')
-    parser.add_argument('--auto-port', action='store_true', help='自动寻找可用端口')
-    parser.add_argument('--log-level', default='info', 
-                       choices=['debug', 'info', 'warning', 'error'],
-                       help='日志级别')
-    
-    args = parser.parse_args()
-    
-    # 自动寻找可用端口
-    if args.auto_port:
-        args.port = get_available_port(args.port)
-        print(f"使用端口: {args.port}")
-    
-    # 保留原有 main 定义以兼容，但 __main__ 中改用 hypercorn 直接启动
-    return True
-
-
 if __name__ == "__main__":
     from hypercorn.asyncio import serve
     from hypercorn.config import Config
 
-    # 从环境变量获取端口，默认7861
-    PORT = int(os.getenv("PORT", "7861"))
+    # 从配置获取端口
+    from config import get_server_port
+    PORT = get_server_port()
     
     config = Config()
     config.bind = [f"0.0.0.0:{PORT}"]
