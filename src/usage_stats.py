@@ -3,11 +3,13 @@ Usage statistics module for tracking API calls per credential file.
 Uses the simpler logic: compare current time with next_reset_time.
 """
 import os
-import toml
-import aiofiles
+import time
 from datetime import datetime, timezone, timedelta
-from typing import Dict, Any, Optional
 from threading import Lock
+from typing import Dict, Any, Optional
+
+import aiofiles
+import toml
 
 from config import CREDENTIALS_DIR
 from log import log
@@ -114,6 +116,10 @@ class UsageStats:
                         self._stats_cache[normalized_filename] = cred_data["usage_stats"]
                 
                 log.debug(f"Loaded usage statistics for {len(self._stats_cache)} credential files")
+                
+                # Clean statistics for deleted credential files after loading
+                await self.clean_deleted_credentials()
+                
             else:
                 log.info("State file not found, starting with empty statistics")
                 self._stats_cache = {}
@@ -122,8 +128,7 @@ class UsageStats:
             self._stats_cache = {}
     
     async def _save_stats(self):
-        """Save statistics to the state file - 优化版本."""
-        import time
+        """Save statistics to the state file."""
         current_time = time.time()
         
         # 使用脏标记和时间间隔控制，减少不必要的写入
@@ -333,6 +338,34 @@ class UsageStats:
         
         await self._save_stats()
     
+    async def clean_deleted_credentials(self):
+        """Clean statistics for deleted credential files."""
+        if not self._initialized:
+            await self.initialize()
+        
+        with self._lock:
+            # Get list of existing credential files
+            existing_files = set()
+            if os.path.exists(CREDENTIALS_DIR):
+                for file in os.listdir(CREDENTIALS_DIR):
+                    if file.endswith(".json"):
+                        existing_files.add(file)
+            
+            # Find statistics for deleted files
+            deleted_files = []
+            for filename in list(self._stats_cache.keys()):
+                if filename not in existing_files:
+                    deleted_files.append(filename)
+            
+            # Remove statistics for deleted files
+            for filename in deleted_files:
+                del self._stats_cache[filename]
+                self._cache_dirty = True
+                log.info(f"Removed statistics for deleted credential file: {filename}")
+            
+            if deleted_files:
+                log.info(f"Cleaned statistics for {len(deleted_files)} deleted credential files")
+    
     async def reset_stats(self, filename: str = None):
         """Reset usage statistics."""
         if not self._initialized:
@@ -414,3 +447,9 @@ async def get_aggregated_stats() -> Dict[str, Any]:
     """Convenience function to get aggregated statistics."""
     stats = await get_usage_stats_instance()
     return await stats.get_aggregated_stats()
+
+
+async def clean_deleted_credentials():
+    """Convenience function to clean statistics for deleted credential files."""
+    stats = await get_usage_stats_instance()
+    await stats.clean_deleted_credentials()

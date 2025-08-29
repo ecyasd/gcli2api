@@ -1,29 +1,112 @@
 """
-Memory Manager - 内存使用监控和控制系统
-强制控制整体内存占用在指定限制以下
+Memory Manager - 内存监控和控制系统
 """
 import gc
-import psutil
 import threading
 import time
 import weakref
-from typing import Dict, Any, Optional, Callable
 from dataclasses import dataclass
 from threading import Lock
+from typing import Dict, Any, Optional, Callable
+
+import psutil
 
 from config import get_config_value
 from log import log
+
+# 检查是否启用内存监控
+def _is_memory_monitoring_enabled() -> bool:
+    """检查是否启用内存监控"""
+    try:
+        return get_config_value('auto_start_memory_monitor', 'false', 'AUTO_START_MEMORY_MONITOR').lower() == 'true'
+    except Exception:
+        return False
+
+# 全局开关
+MEMORY_MONITORING_ENABLED = _is_memory_monitoring_enabled()
 
 
 @dataclass
 class MemoryConfig:
     """内存配置"""
-    max_memory_mb: int = 95  # 最大内存限制(MB)
-    warning_threshold: float = 0.8  # 警告阈值(80%)
-    critical_threshold: float = 0.9  # 紧急阈值(90%)
-    check_interval: int = 10  # 检查间隔(秒)
-    gc_interval: int = 30  # GC间隔(秒)
+    max_memory_mb: int = 100  # 最大内存限制(MB)
+    warning_threshold: float = 0.85  # 警告阈值(85%)
+    critical_threshold: float = 0.95  # 紧急阈值(95%)
+    check_interval: int = 30  # 检查间隔(秒)
+    gc_interval: int = 60  # GC间隔(秒)
     emergency_cleanup_threshold: float = 0.95  # 紧急清理阈值(95%)
+
+
+class DisabledMemoryManager:
+    """禁用版本的内存管理器 - 所有操作都是空操作"""
+    
+    def __init__(self):
+        self.is_monitoring = False
+        self.cleanup_count = 0
+        self.peak_memory_mb = 0
+    
+    def get_memory_usage(self) -> Dict[str, float]:
+        """返回空的内存使用情况"""
+        return {'rss_mb': 0, 'usage_percent': 0, 'limit_mb': 100, 'available_mb': 100, 'peak_mb': 0}
+    
+    def is_memory_pressure(self) -> bool:
+        """始终返回False"""
+        return False
+    
+    def is_memory_critical(self) -> bool:
+        """始终返回False"""
+        return False
+    
+    def is_memory_emergency(self) -> bool:
+        """始终返回False"""
+        return False
+    
+    def register_cleanup_handler(self, name: str, handler: Callable):
+        """空操作"""
+        pass
+    
+    def register_cache_manager(self, name: str, manager: Any):
+        """空操作"""
+        pass
+    
+    def force_cleanup(self) -> Dict[str, Any]:
+        """返回空的清理结果"""
+        return {
+            'freed_mb': 0,
+            'before_mb': 0,
+            'after_mb': 0,
+            'cleaned_items': {},
+            'cleanup_count': 0
+        }
+    
+    def start_monitoring(self):
+        """空操作"""
+        pass
+    
+    def stop_monitoring(self):
+        """空操作"""
+        pass
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """返回禁用状态的统计信息"""
+        return {
+            'current_usage': self.get_memory_usage(),
+            'config': {
+                'max_memory_mb': 100,
+                'warning_threshold': 0.8,
+                'critical_threshold': 0.9,
+                'check_interval': 10
+            },
+            'stats': {
+                'cleanup_count': 0,
+                'peak_memory_mb': 0,
+                'registered_handlers': 0,
+                'registered_caches': 0,
+                'monitoring': False,
+                'disabled': True,
+                'reason': 'AUTO_START_MEMORY_MONITOR not enabled'
+            }
+        }
 
 
 class MemoryManager:
@@ -33,6 +116,10 @@ class MemoryManager:
     _lock = Lock()
     
     def __new__(cls):
+        # 如果内存监控未启用，返回禁用版本
+        if not MEMORY_MONITORING_ENABLED:
+            return DisabledMemoryManager()
+            
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
@@ -43,6 +130,10 @@ class MemoryManager:
         if hasattr(self, '_initialized'):
             return
         
+        if not MEMORY_MONITORING_ENABLED:
+            log.debug("内存监控未启用，跳过内存管理器初始化")
+            return
+            
         self._initialized = True
         self.config = MemoryConfig()
         self.process = psutil.Process()
@@ -69,12 +160,15 @@ class MemoryManager:
     def _load_config(self):
         """从环境变量加载内存配置"""
         try:
-            max_memory = int(get_config_value('max_memory_mb', '95', 'MAX_MEMORY_MB'))
+            max_memory = int(get_config_value('max_memory_mb', '100', 'MAX_MEMORY_MB'))
             self.config.max_memory_mb = max_memory
             
             warning_threshold = float(get_config_value('memory_warning_threshold', '0.8', 'MEMORY_WARNING_THRESHOLD'))
             self.config.warning_threshold = warning_threshold
-            
+
+            critical_threshold = float(get_config_value('memory_critical_threshold', '0.9', 'MEMORY_CRITICAL_THRESHOLD'))
+            self.config.critical_threshold = critical_threshold
+
             check_interval = int(get_config_value('memory_check_interval', '10', 'MEMORY_CHECK_INTERVAL'))
             self.config.check_interval = check_interval
             
@@ -82,11 +176,10 @@ class MemoryManager:
             log.warning(f"加载内存配置失败，使用默认值: {e}")
     
     def get_memory_usage(self) -> Dict[str, float]:
-        """获取当前内存使用情况"""
+        """获取当前物理内存使用情况"""
         try:
             memory_info = self.process.memory_info()
-            rss_mb = memory_info.rss / 1024 / 1024  # RSS内存(MB)
-            vms_mb = memory_info.vms / 1024 / 1024  # 虚拟内存(MB)
+            rss_mb = memory_info.rss / 1024 / 1024  # 物理内存(MB)
             
             # 更新峰值内存
             if rss_mb > self.peak_memory_mb:
@@ -94,7 +187,6 @@ class MemoryManager:
             
             return {
                 'rss_mb': rss_mb,
-                'vms_mb': vms_mb,
                 'usage_percent': rss_mb / self.config.max_memory_mb,
                 'limit_mb': self.config.max_memory_mb,
                 'available_mb': self.config.max_memory_mb - rss_mb,
@@ -102,7 +194,7 @@ class MemoryManager:
             }
         except Exception as e:
             log.error(f"获取内存使用情况失败: {e}")
-            return {'rss_mb': 0, 'vms_mb': 0, 'usage_percent': 0, 'limit_mb': self.config.max_memory_mb, 'available_mb': self.config.max_memory_mb, 'peak_mb': 0}
+            return {'rss_mb': 0, 'usage_percent': 0, 'limit_mb': self.config.max_memory_mb, 'available_mb': self.config.max_memory_mb, 'peak_mb': 0}
     
     def is_memory_pressure(self) -> bool:
         """检查是否存在内存压力"""
@@ -270,6 +362,11 @@ class MemoryManager:
 # 全局内存管理器实例
 memory_manager = MemoryManager()
 
+# 清理状态跟踪（防止重复清理）
+_last_cleanup_time = 0
+_cleanup_in_progress = False
+_cleanup_lock = Lock()
+
 
 def get_memory_manager() -> MemoryManager:
     """获取全局内存管理器实例"""
@@ -277,49 +374,94 @@ def get_memory_manager() -> MemoryManager:
 
 
 def check_memory_limit() -> bool:
-    """检查内存是否超限，如果超限则执行清理"""
+    """检查内存是否超限，如果超限则执行清理，但不阻止正常聊天"""
+    if not MEMORY_MONITORING_ENABLED:
+        return True
+    
+    global _last_cleanup_time, _cleanup_in_progress
+    import time
+    current_time = time.time()
+    
+    # 防止频繁清理（至少间隔30秒）
+    if _cleanup_in_progress or (current_time - _last_cleanup_time < 30):
+        return True
+        
     manager = get_memory_manager()
     
+    def _background_cleanup():
+        """后台清理函数"""
+        global _cleanup_in_progress, _last_cleanup_time
+        
+        with _cleanup_lock:
+            if _cleanup_in_progress:
+                return  # 已经有清理在进行
+            _cleanup_in_progress = True
+        
+        try:
+            manager.force_cleanup()
+            _last_cleanup_time = time.time()
+        except Exception as e:
+            log.error(f"后台内存清理失败: {e}")
+        finally:
+            _cleanup_in_progress = False
+    
+    # 只在紧急状态下执行清理，但不阻止请求
     if manager.is_memory_emergency():
-        log.error("内存使用超过紧急阈值，执行强制清理")
-        manager.force_cleanup()
-        return False
+        log.warning("内存使用超过紧急阈值，执行后台清理（不影响当前请求）")
+        try:
+            cleanup_thread = threading.Thread(
+                target=_background_cleanup,
+                name="EmergencyMemoryCleanup",
+                daemon=True
+            )
+            cleanup_thread.start()
+        except Exception as e:
+            log.error(f"启动后台内存清理失败: {e}")
     
-    if manager.is_memory_critical():
-        log.warning("内存使用达到临界状态，执行清理")
-        manager.force_cleanup()
-        return False
+    elif manager.is_memory_critical():
+        log.info("内存使用达到临界状态，执行后台清理（不影响当前请求）")
+        try:
+            cleanup_thread = threading.Thread(
+                target=_background_cleanup,
+                name="CriticalMemoryCleanup",
+                daemon=True
+            )
+            cleanup_thread.start()
+        except Exception as e:
+            log.error(f"启动后台内存清理失败: {e}")
     
+    # 始终返回 True，不阻止请求
     return True
 
 
 def register_memory_cleanup(name: str, handler: Callable):
     """注册内存清理处理器的便捷函数"""
-    memory_manager.register_cleanup_handler(name, handler)
+    if MEMORY_MONITORING_ENABLED:
+        memory_manager.register_cleanup_handler(name, handler)
 
 
 def register_cache_for_cleanup(name: str, cache_manager: Any):
     """注册缓存管理器的便捷函数"""
-    memory_manager.register_cache_manager(name, cache_manager)
-
-
-def force_memory_cleanup() -> Dict[str, Any]:
-    """强制内存清理的便捷函数"""
-    return memory_manager.force_cleanup()
+    if MEMORY_MONITORING_ENABLED:
+        memory_manager.register_cache_manager(name, cache_manager)
 
 
 def get_memory_usage() -> Dict[str, float]:
-    """获取内存使用情况的便捷函数"""
+    """获取物理内存使用情况的便捷函数"""
+    if not MEMORY_MONITORING_ENABLED:
+        return {'rss_mb': 0, 'usage_percent': 0, 'limit_mb': 100, 'available_mb': 100, 'peak_mb': 0}
     return memory_manager.get_memory_usage()
 
 
 # 自动启动内存监控
 def auto_start_monitoring():
     """自动启动内存监控"""
+    if not MEMORY_MONITORING_ENABLED:
+        log.info("内存监控功能已禁用 (AUTO_START_MEMORY_MONITOR=false)")
+        return
+        
     try:
-        auto_start = get_config_value('auto_start_memory_monitor', 'true', 'AUTO_START_MEMORY_MONITOR').lower() == 'true'
-        if auto_start:
-            memory_manager.start_monitoring()
+        memory_manager.start_monitoring()
     except Exception as e:
         log.error(f"自动启动内存监控失败: {e}")
 

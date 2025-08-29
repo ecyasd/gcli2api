@@ -4,10 +4,11 @@ Anti-Truncation Module - Ensures complete streaming output
 """
 import json
 from typing import Dict, Any, AsyncGenerator
+
 from fastapi.responses import StreamingResponse
 
 from log import log
-from .memory_manager import check_memory_limit, register_memory_cleanup
+from .memory_manager import check_memory_limit
 
 # 反截断配置
 DONE_MARKER = "[done]"
